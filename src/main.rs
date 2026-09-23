@@ -4,7 +4,7 @@ use laya_rust::systemone::{self, Question};
 use laya_rust::tokenizer::Tokenizer;
 use laya_rust::weights::Tensors;
 use laya_rust::{
-    DEFAULT_MODEL, GGUF_FILE, arch, backend, convert, floats, model_spec, tokenizer_json,
+    arch, backend, convert, floats, gguf_path, model_path, model_spec, tokenizer_json,
 };
 use serde_json::{Map, Value, json};
 use std::io::Read;
@@ -16,7 +16,9 @@ const DEFAULT_WARMUP: usize = 3;
 const DEFAULT_BITS: i32 = 4;
 const DEFAULT_GROUP: i32 = 64;
 
-const MODEL_HELP: &str = "model directory holding laya-f16.gguf";
+const MODEL_HELP: &str =
+    "model directory or .gguf file (default: $LAYA_MODEL, else models/laya)";
+const MODEL_HELP_CONVERT: &str = "checkpoint directory (--to gguf), or model directory / .gguf file (--to mlx); default: $LAYA_MODEL, else models/laya";
 
 const REQUEST_HELP: &str = "\
 request (TypeSafe System One shape):
@@ -118,8 +120,8 @@ enum Cmd {
     after_help = REQUEST_HELP
 )]
 struct TestArgs {
-    #[arg(long, short = 'm', value_name = "DIR", default_value = DEFAULT_MODEL, help = MODEL_HELP)]
-    model: String,
+    #[arg(long, short = 'm', value_name = "PATH", help = MODEL_HELP)]
+    model: Option<String>,
     #[arg(long, value_name = "NAME", default_value = "auto", help = "inference backend")]
     backend: BackendArg,
     #[arg(long, help = "mlx only: load mlx/weights.safetensors instead of the dense GGUF values")]
@@ -138,8 +140,8 @@ struct TestArgs {
     after_help = REQUEST_HELP
 )]
 struct BenchArgs {
-    #[arg(long, short = 'm', value_name = "DIR", default_value = DEFAULT_MODEL, help = MODEL_HELP)]
-    model: String,
+    #[arg(long, short = 'm', value_name = "PATH", help = MODEL_HELP)]
+    model: Option<String>,
     #[arg(long, value_name = "NAME", default_value = "auto", help = "inference backend")]
     backend: BackendArg,
     #[arg(long, help = "mlx only: load mlx/weights.safetensors instead of the dense GGUF values")]
@@ -162,8 +164,8 @@ struct BenchArgs {
     after_help = REQUEST_HELP
 )]
 struct TokenizeArgs {
-    #[arg(long, short = 'm', value_name = "DIR", default_value = DEFAULT_MODEL, help = MODEL_HELP)]
-    model: String,
+    #[arg(long, short = 'm', value_name = "PATH", help = MODEL_HELP)]
+    model: Option<String>,
     #[arg(value_name = "REQUEST", help = "request JSON, '-' for stdin, or omitted for the builtin demo")]
     input: Option<String>,
 }
@@ -171,8 +173,8 @@ struct TokenizeArgs {
 #[derive(Args)]
 #[command(about = "Dump the tensor table read back from the GGUF")]
 struct WeightsArgs {
-    #[arg(long, short = 'm', value_name = "DIR", default_value = DEFAULT_MODEL, help = MODEL_HELP)]
-    model: String,
+    #[arg(long, short = 'm', value_name = "PATH", help = MODEL_HELP)]
+    model: Option<String>,
 }
 
 #[derive(Args)]
@@ -181,8 +183,8 @@ struct WeightsArgs {
     after_help = SCENARIOS_HELP
 )]
 struct GoldenArgs {
-    #[arg(long, short = 'm', value_name = "DIR", default_value = DEFAULT_MODEL, help = MODEL_HELP)]
-    model: String,
+    #[arg(long, short = 'm', value_name = "PATH", help = MODEL_HELP)]
+    model: Option<String>,
     #[arg(long, value_name = "NAME", default_value = "auto", help = "inference backend")]
     backend: BackendArg,
     #[arg(long, help = "mlx only: load mlx/weights.safetensors instead of the dense GGUF values")]
@@ -198,8 +200,8 @@ struct GoldenArgs {
 #[derive(Args)]
 #[command(about = "Write a GGUF from the safetensors checkpoint, or MLX affine weights from the GGUF")]
 struct ConvertArgs {
-    #[arg(long, short = 'm', value_name = "DIR", default_value = DEFAULT_MODEL, help = MODEL_HELP)]
-    model: String,
+    #[arg(long, short = 'm', value_name = "PATH", help = MODEL_HELP_CONVERT)]
+    model: Option<String>,
     #[arg(long, value_name = "NAME", help = "output format")]
     to: ConvertTo,
     #[arg(long, value_name = "PATH", help = "output path (default: the model directory's laya-f16.gguf, laya-f32.gguf with --f32, or mlx/weights.safetensors)")]
@@ -557,7 +559,7 @@ fn read_req(input: Option<&str>) -> Value {
 
 fn cmd_test(a: TestArgs) {
     let load = Load {
-        dir: a.model,
+        dir: model_path(a.model.as_deref()),
         backend: a.backend.id(),
         quantized: a.quantized,
         bits: DEFAULT_BITS,
@@ -609,7 +611,7 @@ fn cmd_test(a: TestArgs) {
 
 fn cmd_bench(a: BenchArgs) {
     let load = Load {
-        dir: a.model,
+        dir: model_path(a.model.as_deref()),
         backend: a.backend.id(),
         quantized: a.quantized,
         bits: DEFAULT_BITS,
@@ -680,7 +682,7 @@ fn cmd_bench(a: BenchArgs) {
 }
 
 fn cmd_weights(a: WeightsArgs) {
-    let t = Tensors::open(&format!("{}/{}", a.model, GGUF_FILE));
+    let t = Tensors::open(&gguf_path(&model_path(a.model.as_deref())));
     let d = t.dump(&arch::weight_names());
     println!("{}", serde_json::to_string_pretty(&d).unwrap());
 }
@@ -688,13 +690,21 @@ fn cmd_weights(a: WeightsArgs) {
 fn cmd_convert(a: ConvertArgs) {
     match a.to {
         ConvertTo::Gguf => {
+            let model = model_path(a.model.as_deref());
+            if std::path::Path::new(&model).is_file() {
+                eprintln!(
+                    "convert --to gguf reads a checkpoint directory, not a gguf file: {}",
+                    model
+                );
+                std::process::exit(2);
+            }
             let out = match &a.out {
                 Some(o) => o.clone(),
-                None if a.f32_out => format!("{}/laya-f32.gguf", a.model),
-                None => format!("{}/{}", a.model, GGUF_FILE),
+                None if a.f32_out => format!("{}/laya-f32.gguf", model),
+                None => gguf_path(&model),
             };
             let t = std::time::Instant::now();
-            let s = convert::to_gguf(&a.model, &out, !a.f32_out);
+            let s = convert::to_gguf(&model, &out, !a.f32_out);
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             println!(
                 "{}",
@@ -719,19 +729,15 @@ fn cmd_convert(a: ConvertArgs) {
 
 #[cfg(feature = "mlx")]
 fn cmd_convert_mlx(a: &ConvertArgs) {
-    let out = a
-        .out
-        .clone()
-        .unwrap_or_else(|| format!("{}/mlx/weights.safetensors", a.model));
+    let gguf = gguf_path(&model_path(a.model.as_deref()));
+    let out = a.out.clone().unwrap_or_else(|| {
+        let dir = std::path::Path::new(&gguf)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        format!("{}/mlx/weights.safetensors", dir.display())
+    });
     let t = std::time::Instant::now();
-    let s = backend::mlx::convert(
-        &format!("{}/{}", a.model, GGUF_FILE),
-        None,
-        None,
-        a.bits,
-        a.group.value(),
-        &out,
-    );
+    let s = backend::mlx::convert(&gguf, None, None, a.bits, a.group.value(), &out);
     let ms = t.elapsed().as_secs_f64() * 1000.0;
     println!(
         "{}",
@@ -761,7 +767,8 @@ fn cmd_convert_mlx(_a: &ConvertArgs) {
 fn cmd_tokenize(a: TokenizeArgs) {
     let req = read_req(a.input.as_deref());
     let (state, questions) = systemone::parse_request(&req);
-    let tok = Tokenizer::from_json(&tokenizer_json(&a.model));
+    let model = model_path(a.model.as_deref());
+    let tok = Tokenizer::from_json(&tokenizer_json(&model));
     let mut out = Map::new();
     for q in &questions {
         let opts = systemone::render_options(q);
@@ -857,7 +864,7 @@ fn parse_scenarios(raw: &str) -> Vec<Scenario> {
 
 fn cmd_golden(a: GoldenArgs) {
     let load = Load {
-        dir: a.model,
+        dir: model_path(a.model.as_deref()),
         backend: a.backend.id(),
         quantized: a.quantized,
         bits: DEFAULT_BITS,

@@ -19,7 +19,8 @@ fn model_dir() -> Option<PathBuf> {
     let d = std::env::var("LAYA_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| repo_root().join("models/laya"));
-    d.join(laya_rust::GGUF_FILE).exists().then_some(d)
+    let gguf = laya_rust::gguf_path(d.to_str()?);
+    PathBuf::from(gguf).exists().then_some(d)
 }
 
 fn f32s(v: &Value) -> Vec<f32> {
@@ -79,7 +80,7 @@ fn answer_numbers(a: &Value) -> Vec<(String, f64)> {
 fn golden_forward_and_answers() {
     let Some(dir) = model_dir() else {
         eprintln!(
-            "SKIP golden: no model directory. Set LAYA_MODEL_DIR or place the GGUF in models/laya"
+            "SKIP golden: no model. Set LAYA_MODEL_DIR to a directory or a .gguf file, or place the GGUF in models/laya"
         );
         return;
     };

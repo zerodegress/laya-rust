@@ -24,19 +24,20 @@ The commands below call the resulting binary as `laya-rust`.
 
 ## Model
 
-The engine reads one file: `{model dir}/laya-f16.gguf`. Write it once from the upstream checkpoint with
+The engine reads one file, named at run time: `--model PATH` / `-m`, else `$LAYA_MODEL`, else `models/laya`. A directory means the `laya-f16.gguf` inside it; a `.gguf` path is used as given. Write it once from the upstream checkpoint with
 
 ```bash
 laya-rust convert --to gguf --model models/laya
 ```
 
-after dropping the checkpoint's `model.safetensors`, `encoder/config.json`, `rl_agent_config.json` and `tokenizer/tokenizer.json` into the model directory (default `models/laya`). The GGUF carries the weights, the architecture hyper-parameters, the tokenizer and the calibration temperatures in one self-describing file, so nothing else is needed afterwards. Weights are not part of this repository.
+after dropping the checkpoint's `model.safetensors`, `encoder/config.json`, `rl_agent_config.json` and `tokenizer/tokenizer.json` into the model directory (default `models/laya`). The GGUF carries the weights, the architecture hyper-parameters, the tokenizer and the calibration temperatures in one self-describing file, so nothing else is needed afterwards. `--f32` writes `laya-f32.gguf` instead, and the engine never depends on either name: point `--model` at the file you built. Weights are not part of this repository.
 
 ## Usage
 
 ```bash
 laya-rust test -v '{"state":"Help! My payouts have failed for 3 days.","questions":{"dept":{"type":"choice","instructions":"Which team should handle this?","criteria":{"billing":"Payments","technical":"Bugs"}},"urgent":{"type":"noul","instructions":"Does this convey urgency?"}}}'
 laya-rust test  -  < req.json                  # request from stdin
+laya-rust test -m models/laya/laya-f16.gguf - < req.json   # or a specific .gguf (env: $LAYA_MODEL)
 laya-rust test --backend cpu - < req.json      # pick a backend
 laya-rust bench --warmup 10 --iters 50 - < req.json
 laya-rust tokenize  -  < req.json              # tokenization only, no backend, no weights
@@ -46,9 +47,9 @@ laya-rust convert --to mlx --bits 4 --group 64 # MLX affine weights (mlx builds)
 
 `test` runs one request and prints the System One response, `bench` reports the steady-state latency distribution, `tokenize` dumps the tokenized sequences, `weights` dumps the tensor table read back from the GGUF, and `convert` writes a GGUF from the safetensors checkpoint or an MLX affine weight file from the GGUF. `-h` / `--help`, `help <command>` and `-V` behave as usual; flags are scoped to the subcommand that uses them.
 
-Common flags: `--model DIR` / `-m` (default `models/laya`), `--backend auto|cuda|mlx|cpu`, `--max-tokens N` (padded-token budget per forward, default 16384), `--verbose` / `-v`. `-` (or no argument) reads the request from stdin, and empty stdin uses a builtin demo.
+Common flags: `--model PATH` / `-m` (a model directory, or a `.gguf` file; default `$LAYA_MODEL`, else `models/laya`), `--backend auto|cuda|mlx|cpu`, `--max-tokens N` (padded-token budget per forward, default 16384), `--verbose` / `-v`. `-` (or no argument) reads the request from stdin, and empty stdin uses a builtin demo.
 
-Environment: `CUDA_PATH` / `CUDA_HOME` override the NVRTC include path, `LAYA_CPU_THREADS` sets the CPU backend's thread count.
+Environment: `CUDA_PATH` / `CUDA_HOME` override the NVRTC include path, `LAYA_CPU_THREADS` sets the CPU backend's thread count, `LAYA_MODEL` supplies the default for `--model`.
 
 ## Test
 
@@ -58,7 +59,7 @@ cargo test --release --no-default-features --features cpu      # cpu   (parity v
 cargo test --release --no-default-features --features mlx      # mlx   (parity vs fixtures)
 ```
 
-The op and GGUF tests need no weights and run anywhere; the golden replay skips itself unless a model directory holding the GGUF is present.
+The op and GGUF tests need no weights and run anywhere; the golden replay skips itself unless a model is present — a directory holding the GGUF (`LAYA_MODEL_DIR`, or `models/laya`), or a `.gguf` file.
 
 ## Requirements
 

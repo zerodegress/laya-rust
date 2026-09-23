@@ -23,7 +23,7 @@ cargo test --release --no-default-features --features cpu      # cpu   (parity v
 cargo test --release --no-default-features --features mlx      # mlx   (parity vs fixtures)
 ```
 
-`tests/ops.rs` needs no weights and runs anywhere. `tests/gguf.rs` likewise. `tests/golden.rs` skips itself (loudly, naming `LAYA_MODEL_DIR`) unless a model directory holding the GGUF is present — `LAYA_MODEL_DIR`, or `models/laya`. `LAYA_TEST_BACKEND` forces the backend it uses, which is how the parity check runs in a build that has both compiled (`--features cuda,cpu`). Regenerate fixtures on a machine with a GPU and the weights:
+`tests/ops.rs` needs no weights and runs anywhere. `tests/gguf.rs` likewise. `tests/golden.rs` skips itself (loudly, naming `LAYA_MODEL_DIR`) unless a model holding the GGUF is present — `LAYA_MODEL_DIR` (a directory, or a `.gguf` file path), or `models/laya`. `LAYA_TEST_BACKEND` forces the backend it uses, which is how the parity check runs in a build that has both compiled (`--features cuda,cpu`). Regenerate fixtures on a machine with a GPU and the weights:
 
 ```bash
 laya-rust golden --max-tokens 300 --out tests/fixtures tests/scenarios.json
@@ -44,17 +44,17 @@ laya-rust golden --max-tokens 300 --out tests/fixtures tests/scenarios.json
 | `laya-rust golden [--max-tokens N] --out DIR SCENARIOS` | record the parity fixtures |
 | `laya-rust convert --to gguf\|mlx [--out PATH] [--f32] [--bits N] [--group N]` | checkpoint → GGUF, or GGUF → MLX affine weights |
 
-`REQUEST` is inline JSON, `-` for stdin, or omitted for a builtin demo — except on `golden`, where the positional is a *path* to a scenario file. `--model DIR` / `-m` defaults to `models/laya`; `--backend auto|cuda|mlx|cpu` defaults to `auto`, the first backend compiled in the order cuda, mlx, cpu; `--quantized` is mlx-only and resolves to `{model dir}/mlx/weights.safetensors`; `--max-tokens N` defaults to 16384; `-v` / `--verbose` adds timing detail on stderr. `--to` is required on `convert`, and `--bits` / `--group` are validated by the parser (2..8, and 32 / 64 / 128) rather than by a panic or a silent cast. `--help`, `help <command>` and `-V` are `clap`'s.
+`REQUEST` is inline JSON, `-` for stdin, or omitted for a builtin demo — except on `golden`, where the positional is a *path* to a scenario file. `--model PATH` / `-m` is a model *directory* (the GGUF is then `laya-f16.gguf` inside it) or a `.gguf` *file*, and it defaults to `$LAYA_MODEL`, else `models/laya`; `--backend auto|cuda|mlx|cpu` defaults to `auto`, the first backend compiled in the order cuda, mlx, cpu; `--quantized` is mlx-only and resolves to `mlx/weights.safetensors` next to the GGUF; `--max-tokens N` defaults to 16384; `-v` / `--verbose` adds timing detail on stderr. `--to` is required on `convert` (`--to gguf` reads the checkpoint *directory* and refuses a `.gguf` path — the store is the input there; `--to mlx` takes either form), and `--bits` / `--group` are validated by the parser (2..8, and 32 / 64 / 128) rather than by a panic or a silent cast. `--help`, `help <command>` and `-V` are `clap`'s.
 
 Flags that described the removed ONNX sidecar (`--dtype`, `--weights-json`) and the removed plugin GEMM (`--gemm`) are rejected with an explanation rather than silently ignored, because accepting them would advertise a capability this build does not have.
 
-Environment: `CUDA_PATH` / `CUDA_HOME` override the NVRTC include path (default `/usr/local/cuda`), `LAYA_CPU_THREADS` sets the CPU backend's thread count (default: available parallelism), and `LAYA_MODEL_DIR` / `LAYA_TEST_BACKEND` are read by `tests/golden.rs`.
+Environment: `CUDA_PATH` / `CUDA_HOME` override the NVRTC include path (default `/usr/local/cuda`), `LAYA_CPU_THREADS` sets the CPU backend's thread count (default: available parallelism), `LAYA_MODEL` supplies the default for `--model` everywhere, and `LAYA_MODEL_DIR` / `LAYA_TEST_BACKEND` are read by `tests/golden.rs`.
 
 ## Model
 
 The weights are the `safetensors` checkpoint of `convaiinnovations/laya`: a **ModernBERT-large** backbone (28 encoder layers) plus a decision head (2 transformer layers, an option-marker scorer and an act/escalate head), 421M parameters, non-autoregressive. It never generates text.
 
-The engine's weight format is **GGUF** and it is the only one. `convert --to gguf` runs once against the checkpoint; afterwards only `{model dir}/laya-f16.gguf` is read. The ONNX export the CUDA path was originally built against is gone, along with `weights.json` and the `--dtype` file table.
+The engine's weight format is **GGUF** and it is the only one. `convert --to gguf` runs once against the checkpoint; afterwards the engine reads only that GGUF, at whatever path `--model` / `$LAYA_MODEL` names — `{model dir}/laya-f16.gguf` for a directory, or the file itself. The ONNX export the CUDA path was originally built against is gone, along with `weights.json` and the `--dtype` file table.
 
 Architecture constants (`src/arch.rs`):
 
@@ -266,7 +266,7 @@ laya-rust test  --quantized - < req.json           # mlx: use the quantised weig
 laya-rust bench --quantized --warmup 10 --iters 50 - < req.json
 ```
 
-`--quantized` on the MLX backend means "MLX affine-quantised weights"; it resolves to `{model dir}/mlx/weights.safetensors`, and the dense tensor values still come from `{model dir}/laya-f16.gguf`. If the file is absent the flag falls back to the dense backend rather than quantising at load. `bits`/`group` live in the file's safetensors metadata, so the file is self-describing and `--bits`/`--group` only matter when converting. At runtime the weights feed `quantized_matmul`: `matmul` and `matmul_t` both quantise the GGUF weight as stored along its last axis and then differ only in the `transpose` flag, so no host-side transpose or re-layout is needed. `embedding` and `add_type` gather rows from the packed weight, scales and biases and `dequantize` the gathered slice.
+`--quantized` on the MLX backend means "MLX affine-quantised weights"; it resolves to `mlx/weights.safetensors` next to the GGUF, and the dense tensor values still come from that GGUF. If the file is absent the flag falls back to the dense backend rather than quantising at load. `bits`/`group` live in the file's safetensors metadata, so the file is self-describing and `--bits`/`--group` only matter when converting. At runtime the weights feed `quantized_matmul`: `matmul` and `matmul_t` both quantise the GGUF weight as stored along its last axis and then differ only in the `transpose` flag, so no host-side transpose or re-layout is needed. `embedding` and `add_type` gather rows from the packed weight, scales and biases and `dequantize` the gathered slice.
 
 Details that turned out to matter:
 
@@ -317,6 +317,6 @@ No fixture, tolerance, scenario or assertion was changed to produce these number
 
 `ops::Backend` is the fine-grained seam, generic over an associated tensor type, so a backend keeps native handles with no dynamic dispatch in the hot path. Index inputs (`ids`, `att`, `mpos`, `mmask`, `qtype`) are passed as host slices rather than tensors: they are tiny, they already live in the request, and it keeps an integer tensor type out of the abstraction.
 
-Weight-source resolution is trivial now that there is one format: `model_spec` builds `{dir}/laya-f16.gguf`, and the only variant is the MLX affine file at `{dir}/mlx/weights.safetensors`, selected by `--quantized`. `EngineInfo.dtype` reports what the GGUF actually declares rather than what a flag asked for, so `--verbose` cannot lie about it.
+Weight-source resolution is trivial now that there is one format: `model_path` resolves `--model`, else `$LAYA_MODEL`, else `models/laya`, `gguf_path` passes an existing file through and otherwise appends `laya-f16.gguf` to the directory, and the only variant is the MLX affine file next to the GGUF, selected by `--quantized`. `EngineInfo.dtype` reports what the GGUF actually declares rather than what a flag asked for, so `--verbose` cannot lie about it.
 
 Adding a backend means adding `src/backend/<name>/`, its cargo feature, one entry in `backend::ALL`, `backend::compiled`, `backend::open`, and one arm in the `open_<name>` functions.
