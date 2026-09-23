@@ -1,0 +1,232 @@
+{
+  "scenarios": [
+    {
+      "name": "demo",
+      "request": {
+        "state": "Help! My payouts have been failing for 3 days.",
+        "model": "laya-rust",
+        "questions": {
+          "department": {
+            "type": "choice",
+            "instructions": "Which team should handle this?",
+            "criteria": {
+              "billing": "Payments, invoicing, refunds",
+              "technical": "Bugs, outages, integrations",
+              "sales": "Pricing, upgrades, new accounts"
+            }
+          },
+          "is_urgent": {
+            "type": "noul",
+            "instructions": "Does this convey urgency?"
+          },
+          "frustration": {
+            "type": "score",
+            "instructions": "How frustrated is the customer?",
+            "criteria": [
+              "Calm",
+              "Frustrated",
+              "Very angry"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "single-choice",
+      "request": {
+        "state": "The invoice shows a duplicate charge.",
+        "questions": {
+          "dept": {
+            "type": "choice",
+            "instructions": "Route this ticket.",
+            "criteria": {
+              "billing": "Money",
+              "technical": "Code"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "object-state",
+      "request": {
+        "state": {
+          "ticket": {
+            "id": 4021,
+            "tags": [
+              "urgent",
+              "billing"
+            ],
+            "amount": 19.99
+          },
+          "history": [
+            {
+              "role": "user",
+              "text": "still broken"
+            }
+          ]
+        },
+        "questions": {
+          "dept": {
+            "type": "choice",
+            "instructions": "Route this ticket.",
+            "criteria": [
+              "billing",
+              "technical",
+              "sales"
+            ]
+          },
+          "escalate": {
+            "type": "noul",
+            "instructions": "Should this be escalated?",
+            "criteria": {
+              "true": "yes, escalate",
+              "false": "no, routine"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "many-options",
+      "request": {
+        "state": "Customer wants a refund for a late delivery.",
+        "questions": {
+          "pick": {
+            "type": "choice",
+            "instructions": "Pick one",
+            "criteria": [
+              "opt00",
+              "opt01",
+              "opt02",
+              "opt03",
+              "opt04",
+              "opt05",
+              "opt06",
+              "opt07",
+              "opt08",
+              "opt09",
+              "opt10"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "many-questions",
+      "request": {
+        "state": "Batch triage run over an inbox dump.",
+        "questions": {
+          "q00": {
+            "type": "choice",
+            "instructions": "Classify item 0",
+            "criteria": [
+              "alpha 0",
+              "beta 0",
+              "gamma 0"
+            ]
+          },
+          "q01": {
+            "type": "choice",
+            "instructions": "Classify item 1",
+            "criteria": [
+              "alpha 1",
+              "beta 1",
+              "gamma 1"
+            ]
+          },
+          "q02": {
+            "type": "choice",
+            "instructions": "Classify item 2",
+            "criteria": [
+              "alpha 2",
+              "beta 2",
+              "gamma 2"
+            ]
+          },
+          "q03": {
+            "type": "choice",
+            "instructions": "Classify item 3",
+            "criteria": [
+              "alpha 3",
+              "beta 3",
+              "gamma 3"
+            ]
+          },
+          "q04": {
+            "type": "choice",
+            "instructions": "Classify item 4",
+            "criteria": [
+              "alpha 4",
+              "beta 4",
+              "gamma 4"
+            ]
+          },
+          "q05": {
+            "type": "choice",
+            "instructions": "Classify item 5",
+            "criteria": [
+              "alpha 5",
+              "beta 5",
+              "gamma 5"
+            ]
+          },
+          "q06": {
+            "type": "choice",
+            "instructions": "Classify item 6",
+            "criteria": [
+              "alpha 6",
+              "beta 6",
+              "gamma 6"
+            ]
+          },
+          "q07": {
+            "type": "choice",
+            "instructions": "Classify item 7",
+            "criteria": [
+              "alpha 7",
+              "beta 7",
+              "gamma 7"
+            ]
+          },
+          "q08": {
+            "type": "choice",
+            "instructions": "Classify item 8",
+            "criteria": [
+              "alpha 8",
+              "beta 8",
+              "gamma 8"
+            ]
+          },
+          "q09": {
+            "type": "choice",
+            "instructions": "Classify item 9",
+            "criteria": [
+              "alpha 9",
+              "beta 9",
+              "gamma 9"
+            ]
+          },
+          "q10": {
+            "type": "choice",
+            "instructions": "Classify item 10",
+            "criteria": [
+              "alpha 10",
+              "beta 10",
+              "gamma 10"
+            ]
+          },
+          "q11": {
+            "type": "choice",
+            "instructions": "Classify item 11",
+            "criteria": [
+              "alpha 11",
+              "beta 11",
+              "gamma 11"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

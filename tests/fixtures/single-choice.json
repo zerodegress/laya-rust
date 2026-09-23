@@ -1,0 +1,121 @@
+{
+  "name": "single-choice",
+  "backend": "cuda",
+  "dtype": "fp32",
+  "request": {
+    "state": "The invoice shows a duplicate charge.",
+    "questions": {
+      "dept": {
+        "type": "choice",
+        "instructions": "Route this ticket.",
+        "criteria": {
+          "billing": "Money",
+          "technical": "Code"
+        }
+      }
+    }
+  },
+  "forwards": [
+    {
+      "n": 1,
+      "l": 26,
+      "k": 2,
+      "ids": [
+        50281,
+        22122,
+        1953,
+        27,
+        22720,
+        436,
+        13571,
+        15,
+        50282,
+        50284,
+        33484,
+        27,
+        22405,
+        50284,
+        7681,
+        27,
+        6307,
+        50282,
+        510,
+        45156,
+        2722,
+        247,
+        21036,
+        4179,
+        15,
+        50282
+      ],
+      "att": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "mpos": [
+        9,
+        13
+      ],
+      "mmask": [
+        1,
+        1
+      ],
+      "qtype": [
+        0
+      ],
+      "rows": [
+        {
+          "id": "dept",
+          "markers": 2,
+          "qtype": 0
+        }
+      ],
+      "logits": [
+        3.6570229530334473,
+        -1.777082920074463
+      ],
+      "act": [
+        4510.0205078125,
+        -3686.41845703125
+      ]
+    }
+  ],
+  "answers": {
+    "dept": {
+      "type": "choice",
+      "choice": "billing",
+      "probabilities": {
+        "billing": 0.9452999830245972,
+        "technical": 0.05469999834895134
+      },
+      "confidence": 0.6941999793052673,
+      "rl_agent": {
+        "act_probability": 1.0
+      }
+    }
+  }
+}
