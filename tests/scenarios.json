@@ -4,7 +4,7 @@
       "name": "demo",
       "request": {
         "state": "Help! My payouts have been failing for 3 days.",
-        "model": "laya-rust",
+        "model": "laya",
         "questions": {
           "department": {
             "type": "choice",

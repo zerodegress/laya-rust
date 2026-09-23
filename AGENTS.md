@@ -11,7 +11,7 @@ Agent-facing notes for `laya-rust`: the hard rules, and the knowledge a develope
 
 ## Build and test
 
-One backend per build; a build with no backend feature is a compile error that names the features (`src/lib.rs`). `cuda` is the default feature. The examples below call the built binary as `laya-rust`.
+One backend per build; a build with no backend feature is a compile error that names the features (`src/lib.rs`). `cuda` is the default feature. The package is `laya-rust` (library crate `laya_rust`) and the binary it builds is `laya`, which is the name every example below uses.
 
 ```bash
 cargo build --release                                        # CUDA (default)
@@ -26,7 +26,7 @@ cargo test --release --no-default-features --features mlx      # mlx   (parity v
 `tests/ops.rs` needs no weights and runs anywhere. `tests/gguf.rs` likewise. `tests/golden.rs` skips itself (loudly, naming `LAYA_MODEL_DIR`) unless a model holding the GGUF is present — `LAYA_MODEL_DIR` (a directory, or a `.gguf` file path), or `models/laya`. `LAYA_TEST_BACKEND` forces the backend it uses, which is how the parity check runs in a build that has both compiled (`--features cuda,cpu`). Regenerate fixtures on a machine with a GPU and the weights:
 
 ```bash
-laya-rust golden --max-tokens 300 --out tests/fixtures tests/scenarios.json
+laya golden --max-tokens 300 --out tests/fixtures tests/scenarios.json
 ```
 
 `tests/ops.rs` runs the same 18 assertions once per compiled backend (`cpu::…` and `mlx::…`) from a single macro body, so a new backend inherits the whole check set by implementing `ops::Backend` and adding one `suite!` line.
@@ -37,12 +37,12 @@ laya-rust golden --max-tokens 300 --out tests/fixtures tests/scenarios.json
 
 | command | role |
 |---|---|
-| `laya-rust test [-v] [REQUEST]` | run one request (batched into as few forwards as `--max-tokens` allows) and print the System One response |
-| `laya-rust bench [--warmup N] [--iters N] [REQUEST]` | steady-state latency distribution |
-| `laya-rust tokenize [REQUEST]` | dump the tokenized sequences without loading a backend |
-| `laya-rust weights` | dump the tensor table read back from the GGUF |
-| `laya-rust golden [--max-tokens N] --out DIR SCENARIOS` | record the parity fixtures |
-| `laya-rust convert --to gguf\|mlx [--out PATH] [--f32] [--bits N] [--group N]` | checkpoint → GGUF, or GGUF → MLX affine weights |
+| `laya test [-v] [REQUEST]` | run one request (batched into as few forwards as `--max-tokens` allows) and print the System One response |
+| `laya bench [--warmup N] [--iters N] [REQUEST]` | steady-state latency distribution |
+| `laya tokenize [REQUEST]` | dump the tokenized sequences without loading a backend |
+| `laya weights` | dump the tensor table read back from the GGUF |
+| `laya golden [--max-tokens N] --out DIR SCENARIOS` | record the parity fixtures |
+| `laya convert --to gguf\|mlx [--out PATH] [--f32] [--bits N] [--group N]` | checkpoint → GGUF, or GGUF → MLX affine weights |
 
 `REQUEST` is inline JSON, `-` for stdin, or omitted for a builtin demo — except on `golden`, where the positional is a *path* to a scenario file. `--model PATH` / `-m` is a model *directory* (the GGUF is then `laya-f16.gguf` inside it) or a `.gguf` *file*, and it defaults to `$LAYA_MODEL`, else `models/laya`; `--backend auto|cuda|mlx|cpu` defaults to `auto`, the first backend compiled in the order cuda, mlx, cpu; `--quantized` is mlx-only and resolves to `mlx/weights.safetensors` next to the GGUF; `--max-tokens N` defaults to 16384; `-v` / `--verbose` adds timing detail on stderr. `--to` is required on `convert` (`--to gguf` reads the checkpoint *directory* and refuses a `.gguf` path — the store is the input there; `--to mlx` takes either form), and `--bits` / `--group` are validated by the parser (2..8, and 32 / 64 / 128) rather than by a panic or a silent cast. `--help`, `help <command>` and `-V` are `clap`'s.
 
@@ -261,9 +261,9 @@ The CUDA row is **load-bound at startup, not compute-bound**: 3.57 s to load aga
 MLX affine quantisation is produced by `convert`, which writes a standard **safetensors** file (read back through the `safetensors` crate's `SafeTensors`/`TensorView` and mlx-rs's `Array` conversions). It reads the GGUF, not the checkpoint:
 
 ```bash
-laya-rust convert --to mlx --bits 4 --group 64     # mlx build; writes models/laya/mlx/weights.safetensors
-laya-rust test  --quantized - < req.json           # mlx: use the quantised weights
-laya-rust bench --quantized --warmup 10 --iters 50 - < req.json
+laya convert --to mlx --bits 4 --group 64     # mlx build; writes models/laya/mlx/weights.safetensors
+laya test  --quantized - < req.json           # mlx: use the quantised weights
+laya bench --quantized --warmup 10 --iters 50 - < req.json
 ```
 
 `--quantized` on the MLX backend means "MLX affine-quantised weights"; it resolves to `mlx/weights.safetensors` next to the GGUF, and the dense tensor values still come from that GGUF. If the file is absent the flag falls back to the dense backend rather than quantising at load. `bits`/`group` live in the file's safetensors metadata, so the file is self-describing and `--bits`/`--group` only matter when converting. At runtime the weights feed `quantized_matmul`: `matmul` and `matmul_t` both quantise the GGUF weight as stored along its last axis and then differ only in the `transpose` flag, so no host-side transpose or re-layout is needed. `embedding` and `add_type` gather rows from the packed weight, scales and biases and `dequantize` the gathered slice.

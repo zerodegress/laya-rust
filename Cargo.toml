@@ -3,6 +3,10 @@ name = "laya-rust"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "laya"
+path = "src/main.rs"
+
 [features]
 # One backend per build. `cuda` stays the default so the existing Linux
 # workflow (`cargo build --release`) is unchanged. On macOS build with:

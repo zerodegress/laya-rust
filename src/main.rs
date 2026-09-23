@@ -94,7 +94,7 @@ impl GroupArg {
 
 #[derive(Parser)]
 #[command(
-    name = "laya-rust",
+    name = "laya",
     version,
     about = "Laya inference engine: run, benchmark, tokenize, record fixtures and convert weights",
     after_help = REQUEST_HELP
@@ -231,7 +231,7 @@ fn reject_removed(args: &[String]) {
 fn qdemo() -> Value {
     json!({
         "state": "Help! My payouts have been failing for 3 days.",
-        "model": "laya-rust",
+        "model": "laya",
         "questions": {
             "department": {
                 "type": "choice",
@@ -502,7 +502,7 @@ fn run_all(engine: &mut dyn Engine, plan: &Plan, max_tokens: usize) -> Run {
 
 fn response(run: &Run) -> Value {
     json!({
-        "model": "laya-rust",
+        "model": "laya",
         "answers": run.answers,
         "usage": { "input_tokens": run.tokens, "output_tokens": 0 }
     })
