@@ -113,7 +113,7 @@ fn golden_forward_and_answers() {
         let name = doc["name"].as_str().unwrap().to_string();
         let recorded_by = doc["backend"].as_str().unwrap_or("?").to_string();
         let req: Value = doc["request"].clone();
-        let (_, questions) = systemone::parse_request(&req);
+        let (_, questions) = systemone::parse_request(&req).expect("fixture request");
 
         for fw in doc["forwards"].as_array().expect("forwards") {
             let (n, l, k) = (

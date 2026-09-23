@@ -43,9 +43,10 @@ laya bench --warmup 10 --iters 50 - < req.json
 laya tokenize  -  < req.json              # tokenization only, no backend, no weights
 laya weights                              # dump the GGUF tensor table
 laya convert --to mlx --bits 4 --group 64 # MLX affine weights (mlx builds)
+laya serve                                # long-running HTTP service, POST /systemone
 ```
 
-`test` runs one request and prints the System One response, `bench` reports the steady-state latency distribution, `tokenize` dumps the tokenized sequences, `weights` dumps the tensor table read back from the GGUF, and `convert` writes a GGUF from the safetensors checkpoint or an MLX affine weight file from the GGUF. `-h` / `--help`, `help <command>` and `-V` behave as usual; flags are scoped to the subcommand that uses them.
+`test` runs one request and prints the System One response, `bench` reports the steady-state latency distribution, `tokenize` dumps the tokenized sequences, `weights` dumps the tensor table read back from the GGUF, and `convert` writes a GGUF from the safetensors checkpoint or an MLX affine weight file from the GGUF. `serve` runs the same request path as a long-running HTTP service: one `POST --endpoint` (default `/systemone`), with the tokenizer and the weights loaded once at startup, so a request costs only the forward. `-h` / `--help`, `help <command>` and `-V` behave as usual; flags are scoped to the subcommand that uses them.
 
 Common flags: `--model PATH` / `-m` (a model directory, or a `.gguf` file; default `$LAYA_MODEL`, else `models/laya`), `--backend auto|cuda|mlx|cpu`, `--max-tokens N` (padded-token budget per forward, default 16384), `--verbose` / `-v`. `-` (or no argument) reads the request from stdin, and empty stdin uses a builtin demo.
 

@@ -71,34 +71,23 @@ pub fn serialize_state(state: &Value) -> String {
     }
 }
 
-pub fn parse_request(req: &Value) -> (Value, Vec<Question>) {
+pub fn parse_request(req: &Value) -> Result<(Value, Vec<Question>), String> {
     let state = req.get("state").cloned().unwrap_or(Value::Null);
-    let qs = match req["questions"].as_object() {
-        Some(m) => m,
-        None => {
-            eprintln!("missing \"questions\"");
-            std::process::exit(2);
-        }
-    };
+    let qs = req["questions"]
+        .as_object()
+        .ok_or_else(|| "missing \"questions\"".to_string())?;
     let mut out = Vec::new();
     for (id, q) in qs {
-        let ty = match q["type"].as_str() {
-            Some(t) => t.to_string(),
-            None => {
-                eprintln!("question {}: missing \"type\"", id);
-                std::process::exit(2);
-            }
-        };
+        let ty = q["type"]
+            .as_str()
+            .ok_or_else(|| format!("question {}: missing \"type\"", id))?
+            .to_string();
         if !matches!(ty.as_str(), "choice" | "score" | "noul") {
-            eprintln!("question {}: bad type {}", id, ty);
-            std::process::exit(2);
+            return Err(format!("question {}: bad type {}", id, ty));
         }
         let instructions = match &q["instructions"] {
             Value::String(s) => s.clone(),
-            Value::Null => {
-                eprintln!("question {}: missing \"instructions\"", id);
-                std::process::exit(2);
-            }
+            Value::Null => return Err(format!("question {}: missing \"instructions\"", id)),
             v => serde_json::to_string(v).unwrap(),
         };
         let mut crit = q.get("criteria").cloned().unwrap_or(Value::Null);
@@ -117,7 +106,7 @@ pub fn parse_request(req: &Value) -> (Value, Vec<Question>) {
             crit,
         });
     }
-    (state, out)
+    Ok((state, out))
 }
 
 pub fn render_options(q: &Question) -> Vec<String> {

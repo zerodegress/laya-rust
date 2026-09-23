@@ -43,12 +43,25 @@ laya golden --max-tokens 300 --out tests/fixtures tests/scenarios.json
 | `laya weights` | dump the tensor table read back from the GGUF |
 | `laya golden [--max-tokens N] --out DIR SCENARIOS` | record the parity fixtures |
 | `laya convert --to gguf\|mlx [--out PATH] [--f32] [--bits N] [--group N]` | checkpoint → GGUF, or GGUF → MLX affine weights |
+| `laya serve [--addr ADDR] [--endpoint PATH] [--queue N] [--connections N]` | long-running HTTP service: one `POST` endpoint taking the System One request shape |
 
 `REQUEST` is inline JSON, `-` for stdin, or omitted for a builtin demo — except on `golden`, where the positional is a *path* to a scenario file. `--model PATH` / `-m` is a model *directory* (the GGUF is then `laya-f16.gguf` inside it) or a `.gguf` *file*, and it defaults to `$LAYA_MODEL`, else `models/laya`; `--backend auto|cuda|mlx|cpu` defaults to `auto`, the first backend compiled in the order cuda, mlx, cpu; `--quantized` is mlx-only and resolves to `mlx/weights.safetensors` next to the GGUF; `--max-tokens N` defaults to 16384; `-v` / `--verbose` adds timing detail on stderr. `--to` is required on `convert` (`--to gguf` reads the checkpoint *directory* and refuses a `.gguf` path — the store is the input there; `--to mlx` takes either form), and `--bits` / `--group` are validated by the parser (2..8, and 32 / 64 / 128) rather than by a panic or a silent cast. `--help`, `help <command>` and `-V` are `clap`'s.
 
 Flags that described the removed ONNX sidecar (`--dtype`, `--weights-json`) and the removed plugin GEMM (`--gemm`) are rejected with an explanation rather than silently ignored, because accepting them would advertise a capability this build does not have.
 
 Environment: `CUDA_PATH` / `CUDA_HOME` override the NVRTC include path (default `/usr/local/cuda`), `LAYA_CPU_THREADS` sets the CPU backend's thread count (default: available parallelism), `LAYA_MODEL` supplies the default for `--model` everywhere, and `LAYA_MODEL_DIR` / `LAYA_TEST_BACKEND` are read by `tests/golden.rs`.
+
+## Serving
+
+`laya serve` puts the same request path behind HTTP, for a process that stays warm. It exists because `laya test` re-does per-request work a service must pay once: `prepare` re-reads the GGUF and re-parses the embedded `tokenizer.huggingface.json`, which is ~34 MB of JSON. Measured, that parse costs **104.6 ms** on the CPU backend (against a 3191 ms load) and **93.7–109.0 ms** on CUDA (against a 3073–3162 ms load) — while the CUDA forward it feeds is **20.9 ms**. Re-parsing per request would therefore have cost ~4.5x the inference it exists to serve, so hoisting both to startup is worth far more than the HTTP layer costs.
+
+The HTTP layer is `tiny_http`: blocking, thread-per-connection, no async runtime. That is not only a size argument (it adds `tiny_http`, `ascii`, `chunked_transfer` and `httpdate`, and `log` was already in the tree). `engine::Engine::forward` takes `&mut self` and no backend is `Sync` — CUDA holds a context, MLX a thread-local stream — so inference is single-threaded by construction. An async runtime would add a scheduler whose only job is to hop back off again, and the CPU backend's per-matmul `std::thread::scope` already saturates every core.
+
+One `laya-infer` thread opens the tokenizer and the engine, then owns them for the life of the process. **The engine is constructed on that thread and never moved to it**: MLX's stream is thread-local and CUDA's context is created on first use, so the thread that builds the engine has to be the thread that runs it. Connection threads (default 4) hand over `(request, reply channel)` on a bounded `sync_channel` and block on the reply, so exactly one forward runs at a time and the queue is the backpressure — a full queue answers `503` rather than buffering without limit. Nine warm CUDA requests served end-to-end at 21.3–22.7 ms, against the CLI's own 20.9 ms forward: the HTTP layer costs about a millisecond. Three concurrent CPU requests all answered `200`, serialized at 1.43 s / 3.33 s / 5.50 s with byte-identical bodies.
+
+The endpoint is `POST --endpoint` (default `/systemone`). The body is the shape under **Request shape (System One)** and the reply is the document `test` prints, byte-identical to it but for the trailing newline `println!` adds. `404` unknown path, `405` not POST, `413` body over 8 MiB, `400` unparseable JSON, `422` a request `systemone::parse_request` rejects, `500` a forward that panicked. The last two are why `systemone::parse_request` and `plan_items` return `Result` instead of calling `process::exit`: a malformed request must not take the service down, and the CLI reproduces the old behaviour by exiting `2` through `parse_request_or_exit` / `plan_items_or_exit`. A panic inside a forward is caught per request with `catch_unwind`, so one bad input cannot kill the inference thread and take the whole service with it — and a failure to load the model, which the backends still report by panicking (see `src/backend/cuda/mod.rs`), is caught by the same seam and turns into one line rather than a silent hang.
+
+Shutdown is the default signal behaviour, deliberately: there is no signal handler and no `ctrlc` dependency, because responses are per-request and the weights are read-only, so there is nothing to flush and `SIGINT` / `SIGTERM` loses nothing. Startup detail is reported once under `--verbose`, and there is no health endpoint — the requirement is one endpoint.
 
 ## Model
 
@@ -307,7 +320,7 @@ No fixture, tolerance, scenario or assertion was changed to produce these number
 | `src/weights.rs` | `Tensors` (GGUF-backed, with the layout fix-up) and the safetensors reader `convert` uses |
 | `src/systemone.rs` | Request parsing, sequence construction, calibration, answer shaping |
 | `src/tokenizer.rs` | BPE tokenizer (pure CPU) |
-| `src/main.rs` | CLI front-end: `clap`-derived subcommands whose flags are scoped and typed per command; everything model-related lives in the library |
+| `src/main.rs` | CLI front-end: `clap`-derived subcommands whose flags are scoped and typed per command, including the `serve` HTTP loop and its inference thread; everything model-related lives in the library |
 | `tests/ops.rs` | Op unit tests (every compiled backend, no weights) |
 | `tests/gguf.rs` | GGUF container tests: metadata types, tensor table, alignment (no weights) |
 | `tests/golden.rs` | Golden replay: regression on cuda, parity on cpu / mlx |

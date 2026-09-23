@@ -7,7 +7,10 @@ use laya_rust::{
     arch, backend, convert, floats, gguf_path, model_path, model_spec, tokenizer_json,
 };
 use serde_json::{Map, Value, json};
-use std::io::Read;
+use std::io::{Cursor, Read};
+use std::sync::Arc;
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use tiny_http::{Header, Method, Response, Server};
 
 const DEFAULT_MAX_TOKENS: usize = 16384;
 const DEFAULT_OUT: &str = "tests/fixtures";
@@ -15,6 +18,11 @@ const DEFAULT_ITERS: usize = 50;
 const DEFAULT_WARMUP: usize = 3;
 const DEFAULT_BITS: i32 = 4;
 const DEFAULT_GROUP: i32 = 64;
+const DEFAULT_ADDR: &str = "127.0.0.1:8080";
+const DEFAULT_ENDPOINT: &str = "/systemone";
+const DEFAULT_QUEUE: usize = 64;
+const DEFAULT_CONNECTIONS: usize = 4;
+const MAX_BODY: u64 = 8 * 1024 * 1024;
 
 const MODEL_HELP: &str =
     "model directory or .gguf file (default: $LAYA_MODEL, else models/laya)";
@@ -112,6 +120,7 @@ enum Cmd {
     Weights(WeightsArgs),
     Golden(GoldenArgs),
     Convert(ConvertArgs),
+    Serve(ServeArgs),
 }
 
 #[derive(Args)]
@@ -212,6 +221,32 @@ struct ConvertArgs {
     bits: i32,
     #[arg(long, value_name = "N", default_value = "64", help = "convert --to mlx: affine group size")]
     group: GroupArg,
+}
+
+#[derive(Args)]
+#[command(
+    about = "Serve the System One API over HTTP until interrupted",
+    after_help = REQUEST_HELP
+)]
+struct ServeArgs {
+    #[arg(long, short = 'm', value_name = "PATH", help = MODEL_HELP)]
+    model: Option<String>,
+    #[arg(long, value_name = "NAME", default_value = "auto", help = "inference backend")]
+    backend: BackendArg,
+    #[arg(long, help = "mlx only: load mlx/weights.safetensors instead of the dense GGUF values")]
+    quantized: bool,
+    #[arg(long, short = 'v', help = "startup detail on stderr, and per-request timing")]
+    verbose: bool,
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_MAX_TOKENS, help = "padded-token budget per forward")]
+    max_tokens: usize,
+    #[arg(long, value_name = "ADDR", default_value = DEFAULT_ADDR, help = "listen address")]
+    addr: String,
+    #[arg(long, value_name = "PATH", default_value = DEFAULT_ENDPOINT, help = "endpoint path (POST)")]
+    endpoint: String,
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_QUEUE, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..), help = "queued requests before 503")]
+    queue: usize,
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_CONNECTIONS, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..), help = "connection threads")]
+    connections: usize,
 }
 
 fn reject_removed(args: &[String]) {
@@ -349,19 +384,18 @@ fn load_engine(load: &Load) -> (Box<dyn Engine>, EngineInfo, f64) {
     (engine, info, load_ms)
 }
 
-fn plan_items(tok: &Tokenizer, state: &Value, questions: &[Question]) -> Plan {
+fn plan_items(tok: &Tokenizer, state: &Value, questions: &[Question]) -> Result<Plan, String> {
     let mut items = Vec::new();
     for q in questions {
         let (seq, markers) = systemone::build_sequence(tok, state, q);
         let expect = systemone::render_options(q).len();
         if markers.len() != expect {
-            eprintln!(
+            return Err(format!(
                 "question {}: {} options do not fit in head budget ({} markers)",
                 q.id,
                 expect,
                 markers.len()
-            );
-            std::process::exit(2);
+            ));
         }
         items.push(Item {
             id: q.id.clone(),
@@ -370,14 +404,28 @@ fn plan_items(tok: &Tokenizer, state: &Value, questions: &[Question]) -> Plan {
             qtype: q.qtype,
         });
     }
-    Plan {
+    Ok(Plan {
         questions: questions.to_vec(),
         items,
-    }
+    })
+}
+
+fn parse_request_or_exit(req: &Value) -> (Value, Vec<Question>) {
+    systemone::parse_request(req).unwrap_or_else(|e| {
+        eprintln!("{}", e);
+        std::process::exit(2);
+    })
+}
+
+fn plan_items_or_exit(tok: &Tokenizer, state: &Value, questions: &[Question]) -> Plan {
+    plan_items(tok, state, questions).unwrap_or_else(|e| {
+        eprintln!("{}", e);
+        std::process::exit(2);
+    })
 }
 
 fn prepare(load: &Load, req: &Value) -> Prepared {
-    let (state, questions) = systemone::parse_request(req);
+    let (state, questions) = parse_request_or_exit(req);
     if questions.is_empty() {
         eprintln!("no questions");
         std::process::exit(2);
@@ -386,7 +434,7 @@ fn prepare(load: &Load, req: &Value) -> Prepared {
     let tok = Tokenizer::from_json(&tokenizer_json(&load.dir));
     let tok_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let (engine, info, load_ms) = load_engine(load);
-    let plan = plan_items(&tok, &state, &questions);
+    let plan = plan_items_or_exit(&tok, &state, &questions);
     Prepared {
         engine,
         info,
@@ -526,6 +574,7 @@ fn main() {
         Some(Cmd::Weights(a)) => cmd_weights(a),
         Some(Cmd::Golden(a)) => cmd_golden(a),
         Some(Cmd::Convert(a)) => cmd_convert(a),
+        Some(Cmd::Serve(a)) => cmd_serve(a),
         None => {
             let _ = Cli::command().print_help();
         }
@@ -766,7 +815,7 @@ fn cmd_convert_mlx(_a: &ConvertArgs) {
 
 fn cmd_tokenize(a: TokenizeArgs) {
     let req = read_req(a.input.as_deref());
-    let (state, questions) = systemone::parse_request(&req);
+    let (state, questions) = parse_request_or_exit(&req);
     let model = model_path(a.model.as_deref());
     let tok = Tokenizer::from_json(&tokenizer_json(&model));
     let mut out = Map::new();
@@ -847,7 +896,7 @@ fn parse_scenarios(raw: &str) -> Vec<Scenario> {
     };
     let mut out = Vec::new();
     for (name, request) in entries {
-        let (state, questions) = systemone::parse_request(&request);
+        let (state, questions) = parse_request_or_exit(&request);
         if questions.is_empty() {
             eprintln!("scenario {}: no questions", name);
             std::process::exit(2);
@@ -892,7 +941,7 @@ fn cmd_golden(a: GoldenArgs) {
         scenarios.len()
     );
     for sc in &scenarios {
-        let plan = plan_items(&tok, &sc.state, &sc.questions);
+        let plan = plan_items_or_exit(&tok, &sc.state, &sc.questions);
         let run = run_all(&mut engine, &plan, a.max_tokens);
         let forwards: Vec<Value> = run
             .forwards
@@ -943,4 +992,213 @@ fn cmd_golden(a: GoldenArgs) {
             plan.items.iter().map(|i| i.markers.len()).sum::<usize>()
         );
     }
+}
+
+enum Job {
+    Run(Value, mpsc::Sender<Result<Value, (u16, String)>>),
+    Stop,
+}
+
+struct Service {
+    engine: Box<dyn Engine>,
+    tok: Tokenizer,
+    dir: String,
+    info: EngineInfo,
+    max_tokens: usize,
+    tok_ms: f64,
+    load_ms: f64,
+}
+
+impl Service {
+    fn open(load: &Load, max_tokens: usize) -> Service {
+        let t0 = std::time::Instant::now();
+        let tok = Tokenizer::from_json(&tokenizer_json(&load.dir));
+        let tok_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let (engine, info, load_ms) = load_engine(load);
+        Service {
+            engine,
+            tok,
+            dir: load.dir.clone(),
+            info,
+            max_tokens,
+            tok_ms,
+            load_ms,
+        }
+    }
+
+    fn run(&mut self, req: &Value) -> Result<Value, (u16, String)> {
+        let (state, questions) = systemone::parse_request(req).map_err(|e| (422, e))?;
+        if questions.is_empty() {
+            return Err((422, "no questions".to_string()));
+        }
+        let plan = plan_items(&self.tok, &state, &questions).map_err(|e| (422, e))?;
+        let run = run_all(&mut self.engine, &plan, self.max_tokens);
+        Ok(response(&run))
+    }
+
+    fn detail(&self) -> String {
+        format!(
+            "model={} backend={} device={:?} dtype={} layers={} tokenizer={:.1}ms load={:.0}ms",
+            self.dir,
+            self.info.id.name(),
+            self.info.device,
+            self.info.dtype.name(),
+            self.info.layers,
+            self.tok_ms,
+            self.load_ms
+        )
+    }
+}
+
+fn worker(mut svc: Service, rx: mpsc::Receiver<Job>) {
+    while let Ok(job) = rx.recv() {
+        match job {
+            Job::Stop => break,
+            Job::Run(req, tx) => {
+                let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| svc.run(&req)))
+                    .unwrap_or_else(|_| Err((500, "inference panicked".to_string())));
+                let _ = tx.send(out);
+            }
+        }
+    }
+}
+
+fn json_response(code: u16, v: &Value) -> Response<Cursor<Vec<u8>>> {
+    Response::from_string(serde_json::to_string(v).unwrap())
+        .with_status_code(code)
+        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+}
+
+fn serve_request(mut req: tiny_http::Request, endpoint: &str, tx: &SyncSender<Job>, verbose: bool) {
+    let t = std::time::Instant::now();
+    if req.url() != endpoint {
+        let _ = req.respond(json_response(404, &json!({ "error": "not found" })));
+        return;
+    }
+    if req.method() != &Method::Post {
+        let _ = req.respond(json_response(405, &json!({ "error": "use POST" })));
+        return;
+    }
+    if req.body_length().is_some_and(|n| n as u64 > MAX_BODY) {
+        let _ = req.respond(json_response(413, &json!({ "error": "body too large" })));
+        return;
+    }
+    let mut body = String::new();
+    let read = {
+        let r = req.as_reader();
+        r.take(MAX_BODY).read_to_string(&mut body)
+    };
+    if let Err(e) = read {
+        let _ = req.respond(json_response(400, &json!({ "error": format!("body: {}", e) })));
+        return;
+    }
+    let value: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = req.respond(json_response(
+                400,
+                &json!({ "error": format!("invalid json: {}", e) }),
+            ));
+            return;
+        }
+    };
+    let (rtx, rrx) = mpsc::channel();
+    let ms = |t: &std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+    match tx.try_send(Job::Run(value, rtx)) {
+        Ok(()) => match rrx.recv() {
+            Ok(Ok(out)) => {
+                let _ = req.respond(json_response(200, &out));
+                if verbose {
+                    eprintln!("200 in {:.2}ms", ms(&t));
+                }
+            }
+            Ok(Err((code, e))) => {
+                let _ = req.respond(json_response(code, &json!({ "error": e })));
+                if verbose {
+                    eprintln!("{} in {:.2}ms: {}", code, ms(&t), e);
+                }
+            }
+            Err(_) => {
+                let _ = req.respond(json_response(
+                    503,
+                    &json!({ "error": "inference thread stopped" }),
+                ));
+            }
+        },
+        Err(TrySendError::Full(_)) => {
+            let _ = req.respond(json_response(503, &json!({ "error": "server busy" })));
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            let _ = req.respond(json_response(
+                503,
+                &json!({ "error": "inference thread stopped" }),
+            ));
+        }
+    }
+}
+
+fn cmd_serve(a: ServeArgs) {
+    let load = Load {
+        dir: model_path(a.model.as_deref()),
+        backend: a.backend.id(),
+        quantized: a.quantized,
+        bits: DEFAULT_BITS,
+        group: DEFAULT_GROUP,
+    };
+    let (tx, rx) = mpsc::sync_channel::<Job>(a.queue);
+    let (ready_tx, ready_rx) = mpsc::channel::<String>();
+    let max_tokens = a.max_tokens;
+    let verbose = a.verbose;
+    let loader = std::thread::Builder::new()
+        .name("laya-infer".to_string())
+        .spawn(move || {
+            let svc = Service::open(&load, max_tokens);
+            if ready_tx.send(svc.detail()).is_err() {
+                return;
+            }
+            worker(svc, rx);
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("cannot spawn the inference thread: {}", e);
+            std::process::exit(2);
+        });
+    let detail = match ready_rx.recv() {
+        Ok(d) => d,
+        Err(_) => {
+            eprintln!("the inference thread died while loading the model");
+            std::process::exit(2);
+        }
+    };
+    if verbose {
+        eprintln!("{}", detail);
+    }
+    let server = Server::http(&a.addr).unwrap_or_else(|e| {
+        eprintln!("{}: {}", a.addr, e);
+        std::process::exit(2);
+    });
+    eprintln!(
+        "laya serve: POST http://{}{} ({} connection thread(s), queue {})",
+        server.server_addr(),
+        a.endpoint,
+        a.connections,
+        a.queue
+    );
+    let server = Arc::new(server);
+    let endpoint = Arc::new(a.endpoint.clone());
+    let mut guards = Vec::new();
+    for _ in 0..a.connections {
+        let server = Arc::clone(&server);
+        let endpoint = Arc::clone(&endpoint);
+        let tx = tx.clone();
+        guards.push(std::thread::spawn(move || {
+            while let Ok(req) = server.recv() {
+                serve_request(req, &endpoint, &tx, verbose);
+            }
+        }));
+    }
+    for g in guards {
+        let _ = g.join();
+    }
+    let _ = tx.send(Job::Stop);
+    let _ = loader.join();
 }
